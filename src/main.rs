@@ -7,6 +7,7 @@ use std::io::Write;
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use ctrlc;
 
 // 定义按键类型，可以是键盘按键或鼠标按钮
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,6 +108,8 @@ impl Combo {
 
         match &self.trigger {
             TriggerType::KeySequence { keys, timeout_ms: trigger_timeout } => {
+                // 只屏蔽触发键序列中的最后一个按键（如E+R中的R）
+                // 并且只有在前面的按键匹配时才屏蔽
                 if keys.len() > 1 && keys.last().unwrap() == &key &&
                     key_sequence.len() >= keys.len() - 1 {
                     // 检查序列的前n-1个键是否匹配
@@ -330,10 +333,10 @@ impl AppState {
                     ActionKey::Keyboard(Key::KeyQ),
                     ActionKey::Keyboard(Key::KeyR)
                 ],
-                vec![(0, 50), (50, 0)],
+                vec![(0, 0), (0, 0)],
                 TriggerType::KeySequence {
                     keys: vec![Key::KeyE, Key::KeyR],
-                    timeout_ms: 150,
+                    timeout_ms: 1500,
                 },
                 true // 屏蔽原始输入
             ));
@@ -345,10 +348,10 @@ impl AppState {
                     ActionKey::Keyboard(Key::KeyQ),
                     ActionKey::Keyboard(Key::KeyD)
                 ],
-                vec![(0, 50), (50, 0)],
+                vec![(0, 0), (0, 0)],
                 TriggerType::KeySequence {
                     keys: vec![Key::KeyE, Key::KeyD],
-                    timeout_ms: 150,
+                    timeout_ms: 1500,
                 },
                 true // 屏蔽原始输入
             ));
@@ -368,7 +371,7 @@ impl AppState {
         // 清理过期的屏蔽
         let now = Instant::now();
         self.blocked_keys.retain(|_, time| {
-            now.duration_since(*time) < Duration::from_millis(500) // 按键屏蔽最多持续500毫秒
+            now.duration_since(*time) < Duration::from_millis(100) // 进一步减少屏蔽时间，从200ms改为100ms
         });
         
         self.blocked_keys.contains_key(&key)
@@ -377,6 +380,11 @@ impl AppState {
     // 屏蔽按键
     fn block_key(&mut self, key: Key) {
         self.blocked_keys.insert(key, Instant::now());
+    }
+
+    // 移除按键屏蔽
+    fn unblock_key(&mut self, key: Key) {
+        self.blocked_keys.remove(&key);
     }
 
     // 处理按键事件
@@ -391,6 +399,7 @@ impl AppState {
                     return None; // 屏蔽按键
                 }
                 
+                // 创建按键动作
                 let action = Action {
                     key: ActionKey::Keyboard(key),
                     action_type: ActionType::Press,
@@ -439,13 +448,7 @@ impl AppState {
                 let recent_keys = self.history.get_recent_key_sequence();
                 let last_interval = self.history.get_last_key_interval();
                 
-                // 先检查是否需要屏蔽输入
-                let mut block_needed = false;
-                let mut block_key_value = None;
-                
                 // 遍历所有连招，检查是否需要触发
-                let mut triggered_combo = None;
-                
                 for (idx, combo) in self.combos.iter().enumerate() {
                     if !combo.active {
                         continue;
@@ -469,47 +472,43 @@ impl AppState {
                         TriggerType::Manual => false,
                     };
                     
-                    // 检查是否需要屏蔽输入，先记录下来稍后处理
-                    if combo.block_original_input && 
-                       combo.should_block_input(key, &recent_keys, last_interval) {
-                        // 记录需要屏蔽的按键
-                        block_needed = true;
-                        block_key_value = Some(key);
-                    }
-                    
                     if should_trigger {
-                        triggered_combo = Some(idx);
-                        break;
-                    }
-                }
-                
-                // 现在处理屏蔽
-                if block_needed && block_key_value.is_some() {
-                    self.block_key(block_key_value.unwrap());
-                }
-                
-                // 如果触发了连招，执行它
-                if let Some(idx) = triggered_combo {
-                    let combo = self.combos[idx].clone();
-                    
-                    // 如果需要屏蔽原始输入
-                    if combo.block_original_input {
-                        self.block_key(key);
-                    }
-                    
-                    thread::spawn(move || {
-                        if let Err(e) = combo.execute() {
-                            println!("执行连招失败: {:?}", e);
+                        println!("触发连招: {}", combo.name);
+                        
+                        // 克隆连招以便在新线程中使用
+                        let combo_clone = combo.clone();
+                        
+                        // 如果需要屏蔽原始输入
+                        if combo.block_original_input {
+                            // 屏蔽触发键（只屏蔽触发键，不屏蔽连招中的按键）
+                            println!("屏蔽触发键: {:?}", key);
+                            self.block_key(key);
+                            
+                            // 在新线程中执行连招
+                            thread::spawn(move || {
+                                if let Err(e) = combo_clone.execute() {
+                                    println!("执行连招失败: {:?}", e);
+                                }
+                            });
+                            
+                            // 不传递被屏蔽的按键给游戏
+                            return None;
+                        } else {
+                            // 不屏蔽原始输入的情况下执行连招
+                            thread::spawn(move || {
+                                if let Err(e) = combo_clone.execute() {
+                                    println!("执行连招失败: {:?}", e);
+                                }
+                            });
+                            
+                            // 传递原始按键给游戏
+                            return Some(event.clone());
                         }
-                    });
+                    }
                 }
                 
-                // 返回原始事件（除非被屏蔽）
-                if self.is_key_blocked(key) {
-                    None
-                } else {
-                    Some(event.clone())
-                }
+                // 没有触发任何连招，正常传递按键
+                Some(event.clone())
             },
             EventType::KeyRelease(key) => {
                 println!("Key released: {:?}", key);
@@ -588,6 +587,16 @@ fn handle_command(cmd: &str, state: Arc<RwLock<AppState>>) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("英雄联盟连招脚本 - 增强版");
     
+    // 创建一个通道用于优雅退出
+    let (exit_tx, exit_rx) = mpsc::channel();
+    
+    // 创建一个线程处理Ctrl+C信号
+    let exit_tx_clone = exit_tx.clone();
+    let _ = ctrlc::set_handler(move || {
+        println!("\n接收到Ctrl+C，正在退出...");
+        let _ = exit_tx_clone.send(());
+    });
+    
     // 创建应用状态
     let state = Arc::new(RwLock::new(AppState::new()));
     
@@ -609,16 +618,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("按 Ctrl+C 退出程序");
     
-    // 创建一个通道用于优雅退出
-    let (tx, rx) = mpsc::channel();
-    
-    // 创建一个线程处理Ctrl+C信号
-    let tx_clone = tx.clone();
-    let _ = ctrlc::set_handler(move || {
-        println!("\n接收到Ctrl+C，正在退出...");
-        let _ = tx_clone.send(());
-    });
-
     // 创建命令输入线程
     let state_clone = Arc::clone(&state);
     thread::spawn(move || {
@@ -664,7 +663,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // 主线程等待退出信号
-    rx.recv()?;
+    exit_rx.recv()?;
     
     Ok(())
 }
