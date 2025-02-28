@@ -1,4 +1,5 @@
 mod config;
+mod win_input;
 
 use config::{TriggerType};
 use rdev::{listen, simulate, Button, Event, EventType, Key, SimulateError};
@@ -8,6 +9,7 @@ use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use ctrlc;
+use rand::Rng;
 
 // 定义按键类型，可以是键盘按键或鼠标按钮
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -64,6 +66,9 @@ impl Combo {
     fn execute(&self) -> Result<(), SimulateError> {
         println!("执行连招: {}", self.name);
         
+        let mut rng = rand::thread_rng();
+        
+        // 使用底层API执行连招
         for (idx, key) in self.sequence.iter().enumerate() {
             // 获取当前按键的延迟配置
             let (before_delay, after_delay) = if idx < self.delays.len() {
@@ -72,37 +77,49 @@ impl Combo {
                 (0, 0)
             };
             
-            // 执行前延迟
-            if before_delay > 0 {
-                thread::sleep(Duration::from_millis(before_delay));
-            }
+            // 加入随机延迟(±10ms)，确保不会为负数
+            let random_before = if before_delay > 0 {
+                let delay = before_delay as i64 + rng.gen_range(-10..10);
+                if delay < 0 { 0 } else { delay as u64 }
+            } else {
+                rng.gen_range(0..15) // 小的随机延迟
+            };
             
-            // 按下按键
+            thread::sleep(Duration::from_millis(random_before));
+            
+            // 使用底层API模拟按键
             match key {
                 ActionKey::Keyboard(k) => {
-                    println!("[模拟] 按下按键: {:?}", k);
-                    // 增加按键保持时间，确保游戏能够捕获
-                    simulate(&EventType::KeyPress(*k))?;
-                    thread::sleep(Duration::from_millis(100)); // 增加按键保持时间从50ms到100ms
-                    println!("[模拟] 释放按键: {:?}", k);
-                    simulate(&EventType::KeyRelease(*k))?;
+                    // 随机保持时间(80-120ms)
+                    let hold_time = rng.gen_range(80..120);
+                    win_input::send_key_press(*k, hold_time);
                 }
                 ActionKey::Mouse(b) => {
-                    println!("[模拟] 按下鼠标: {:?}", b);
-                    simulate(&EventType::ButtonPress(*b))?;
-                    thread::sleep(Duration::from_millis(100)); // 同样增加到100ms
-                    println!("[模拟] 释放鼠标: {:?}", b);
-                    simulate(&EventType::ButtonRelease(*b))?;
+                    // 随机保持时间(80-120ms)
+                    let hold_time = rng.gen_range(80..120);
+                    let button_id = match b {
+                        Button::Left => 0,
+                        Button::Right => 1,
+                        _ => 255, // 不支持的按钮
+                    };
+                    
+                    if button_id != 255 {
+                        win_input::send_mouse_click(button_id, hold_time);
+                    } else {
+                        println!("[模拟] 不支持的鼠标按钮: {:?}", b);
+                    }
                 }
             }
             
-            // 执行后延迟，增加按键间隔
-            if after_delay > 0 {
-                thread::sleep(Duration::from_millis(after_delay));
+            // 随机后延迟，确保不会为负数
+            let random_after = if after_delay > 0 {
+                let delay = after_delay as i64 + rng.gen_range(-10..10);
+                if delay < 0 { 0 } else { delay as u64 }
             } else {
-                // 如果没有指定延迟，也添加一个小的延迟
-                thread::sleep(Duration::from_millis(50));
-            }
+                rng.gen_range(30..70) // 稍大的随机延迟
+            };
+            
+            thread::sleep(Duration::from_millis(random_after));
         }
         
         Ok(())
@@ -353,7 +370,7 @@ impl AppState {
                     ActionKey::Keyboard(Key::KeyQ),
                     ActionKey::Keyboard(Key::KeyR)
                 ],
-                vec![(0, 0), (0, 0)],
+                vec![(50, 100), (150, 100)],  // 增加延迟，确保Q和R之间有足够的时间
                 TriggerType::KeySequence {
                     keys: vec![Key::KeyE, Key::KeyR],
                     timeout_ms: 1500,
@@ -388,27 +405,35 @@ impl AppState {
 
     // 检查按键是否被屏蔽，但确保不屏蔽模拟中的按键
     fn is_key_blocked(&mut self, key: Key) -> bool {
-        // 清理过期的屏蔽
-        let now = Instant::now();
-        self.blocked_keys.retain(|_, info| {
-            now.duration_since(info.timestamp) < Duration::from_millis(100) // 100ms屏蔽时间
-        });
-        
-        // 清理过期的模拟按键标记
-        self.simulating_keys.retain(|_, timestamp| {
-            now.duration_since(*timestamp) < Duration::from_millis(1000) // 1秒的模拟时间窗口
-        });
-
-        // 检查是否是模拟中的按键 - 如果是则不屏蔽
+        // 如果是模拟中的按键，不屏蔽
         if self.simulating_keys.contains_key(&key) {
-            println!("[DEBUG] 按键 {:?} 正在模拟中，不屏蔽", key);
-            return false;
+            let now = Instant::now();
+            let sim_time = self.simulating_keys.get(&key).unwrap();
+            
+            // 如果模拟标记超过5秒，清除它（防止永久不屏蔽）
+            if now.duration_since(*sim_time).as_secs() > 5 {
+                self.simulating_keys.remove(&key);
+                println!("[DEBUG] 清除过期的模拟按键标记: {:?}", key);
+            } else {
+                println!("[DEBUG] 不屏蔽模拟按键: {:?}", key);
+                return false;
+            }
         }
         
-        // 检查按键是否被屏蔽
+        // 检查按键是否在屏蔽列表中
         if let Some(info) = self.blocked_keys.get(&key) {
-            println!("[DEBUG] 按键 {:?} 被连招 {} 屏蔽中", key, info.combo_name);
-            return true;
+            let now = Instant::now();
+            let block_time = info.timestamp;
+            
+            // 检查屏蔽是否已过期（100毫秒）
+            if now.duration_since(block_time).as_millis() < 100 {
+                println!("[DEBUG] 按键 {:?} 被连招 {} 屏蔽中", key, info.combo_name);
+                return true;
+            } else {
+                // 屏蔽已过期，移除
+                self.blocked_keys.remove(&key);
+                println!("[DEBUG] 按键 {:?} 屏蔽已过期，移除屏蔽", key);
+            }
         }
         
         false
@@ -551,9 +576,12 @@ impl AppState {
                         
                         // 在新线程中执行连招
                         let combo_clone = combo.clone();
+                        println!("[执行] 开始执行连招: {}", combo_clone.name);
                         thread::spawn(move || {
                             if let Err(e) = combo_clone.execute() {
                                 println!("执行连招失败: {:?}", e);
+                            } else {
+                                println!("[执行] 连招执行完成: {}", combo_clone.name);
                             }
                         });
                         
