@@ -80,13 +80,17 @@ impl Combo {
             // 按下按键
             match key {
                 ActionKey::Keyboard(k) => {
+                    println!("[模拟] 按下按键: {:?}", k);
                     simulate(&EventType::KeyPress(*k))?;
                     thread::sleep(Duration::from_millis(50)); // 短暂延迟确保按键被识别
+                    println!("[模拟] 释放按键: {:?}", k);
                     simulate(&EventType::KeyRelease(*k))?;
                 }
                 ActionKey::Mouse(b) => {
+                    println!("[模拟] 按下鼠标: {:?}", b);
                     simulate(&EventType::ButtonPress(*b))?;
                     thread::sleep(Duration::from_millis(50)); // 短暂延迟确保按键被识别
+                    println!("[模拟] 释放鼠标: {:?}", b);
                     simulate(&EventType::ButtonRelease(*b))?;
                 }
             }
@@ -261,11 +265,19 @@ impl KeyHistory {
     }
 }
 
+// 创建一个新的结构体用于标记需要屏蔽的按键及其触发时间
+#[derive(Debug, Clone)]
+struct BlockedKeyInfo {
+    key: Key,
+    timestamp: Instant,
+    combo_name: String,  // 记录是被哪个连招屏蔽的
+}
+
 // 应用状态
 struct AppState {
     history: KeyHistory,
     combos: Vec<Combo>,
-    blocked_keys: HashMap<Key, Instant>,
+    blocked_keys: HashMap<Key, BlockedKeyInfo>,  // 修改为使用BlockedKeyInfo
     current_champion: Option<String>,
 }
 
@@ -370,32 +382,45 @@ impl AppState {
     fn is_key_blocked(&mut self, key: Key) -> bool {
         // 清理过期的屏蔽
         let now = Instant::now();
-        self.blocked_keys.retain(|_, time| {
-            now.duration_since(*time) < Duration::from_millis(100) // 进一步减少屏蔽时间，从200ms改为100ms
+        self.blocked_keys.retain(|_, info| {
+            now.duration_since(info.timestamp) < Duration::from_millis(100) // 100ms屏蔽时间
         });
         
-        self.blocked_keys.contains_key(&key)
+        // 检查按键是否被屏蔽
+        if let Some(info) = self.blocked_keys.get(&key) {
+            println!("[DEBUG] 按键 {:?} 被连招 {} 屏蔽中", key, info.combo_name);
+            return true;
+        }
+        
+        false
     }
 
     // 屏蔽按键
-    fn block_key(&mut self, key: Key) {
-        self.blocked_keys.insert(key, Instant::now());
+    fn block_key(&mut self, key: Key, combo_name: &str) {
+        println!("[DEBUG] 开始屏蔽按键 {:?} (来自连招: {})", key, combo_name);
+        self.blocked_keys.insert(key, BlockedKeyInfo {
+            key,
+            timestamp: Instant::now(),
+            combo_name: combo_name.to_string(),
+        });
     }
 
     // 移除按键屏蔽
     fn unblock_key(&mut self, key: Key) {
-        self.blocked_keys.remove(&key);
+        if self.blocked_keys.remove(&key).is_some() {
+            println!("[DEBUG] 解除屏蔽按键 {:?}", key);
+        }
     }
 
     // 处理按键事件
     fn handle_event(&mut self, event: &Event) -> Option<Event> {
         match event.event_type {
             EventType::KeyPress(key) => {
-                println!("Key pressed: {:?}", key);
+                println!("[手动] Key pressed: {:?}", key);
                 
                 // 检查按键是否被屏蔽
                 if self.is_key_blocked(key) {
-                    println!("Key blocked: {:?}", key);
+                    println!("[手动] Key blocked: {:?}", key);
                     return None; // 屏蔽按键
                 }
                 
@@ -445,11 +470,13 @@ impl AppState {
                 }
                 
                 // 获取最近的按键序列和时间间隔
-                let recent_keys = self.history.get_recent_key_sequence();
-                let last_interval = self.history.get_last_key_interval();
+                let _recent_keys = self.history.get_recent_key_sequence();
+                let _last_interval = self.history.get_last_key_interval();
                 
-                // 遍历所有连招，检查是否需要触发
-                for (idx, combo) in self.combos.iter().enumerate() {
+                // 查找触发的连招，但不立即执行
+                let mut triggered_combo = None;
+                
+                for combo in &self.combos {
                     if !combo.active {
                         continue;
                     }
@@ -473,37 +500,42 @@ impl AppState {
                     };
                     
                     if should_trigger {
-                        println!("触发连招: {}", combo.name);
+                        // 找到触发的连招，保存以便后续使用
+                        triggered_combo = Some(combo.clone());
+                        break;
+                    }
+                }
+                
+                // 如果找到了触发的连招，处理它
+                if let Some(combo) = triggered_combo {
+                    println!("[触发] 连招: {}", combo.name);
+                    
+                    // 如果需要屏蔽原始输入
+                    if combo.block_original_input {
+                        // 屏蔽触发键，并记录是哪个连招屏蔽的
+                        println!("[触发] 屏蔽触发键: {:?}", key);
+                        let combo_name = combo.name.clone(); // 先复制名称，避免借用冲突
+                        self.block_key(key, &combo_name);
                         
-                        // 克隆连招以便在新线程中使用
-                        let combo_clone = combo.clone();
+                        // 在新线程中执行连招
+                        thread::spawn(move || {
+                            if let Err(e) = combo.execute() {
+                                println!("执行连招失败: {:?}", e);
+                            }
+                        });
                         
-                        // 如果需要屏蔽原始输入
-                        if combo.block_original_input {
-                            // 屏蔽触发键（只屏蔽触发键，不屏蔽连招中的按键）
-                            println!("屏蔽触发键: {:?}", key);
-                            self.block_key(key);
-                            
-                            // 在新线程中执行连招
-                            thread::spawn(move || {
-                                if let Err(e) = combo_clone.execute() {
-                                    println!("执行连招失败: {:?}", e);
-                                }
-                            });
-                            
-                            // 不传递被屏蔽的按键给游戏
-                            return None;
-                        } else {
-                            // 不屏蔽原始输入的情况下执行连招
-                            thread::spawn(move || {
-                                if let Err(e) = combo_clone.execute() {
-                                    println!("执行连招失败: {:?}", e);
-                                }
-                            });
-                            
-                            // 传递原始按键给游戏
-                            return Some(event.clone());
-                        }
+                        // 屏蔽原始触发键
+                        return None;
+                    } else {
+                        // 不屏蔽原始输入的情况下执行连招
+                        thread::spawn(move || {
+                            if let Err(e) = combo.execute() {
+                                println!("执行连招失败: {:?}", e);
+                            }
+                        });
+                        
+                        // 保留原始按键
+                        return Some(event.clone());
                     }
                 }
                 
@@ -511,12 +543,12 @@ impl AppState {
                 Some(event.clone())
             },
             EventType::KeyRelease(key) => {
-                println!("Key released: {:?}", key);
+                println!("[手动] Key released: {:?}", key);
                 
                 // 检查按键是否被屏蔽
                 if self.is_key_blocked(key) {
-                    println!("Key release blocked: {:?}", key);
-                    return None; // 屏蔽按键
+                    println!("[手动] Key release blocked: {:?}", key);
+                    return None; // 屏蔽按键释放
                 }
                 
                 let action = Action {
@@ -529,7 +561,7 @@ impl AppState {
                 Some(event.clone())
             },
             EventType::ButtonPress(button) => {
-                println!("Mouse button pressed: {:?}", button);
+                println!("[手动] Mouse button pressed: {:?}", button);
                 
                 let action = Action {
                     key: ActionKey::Mouse(button),
@@ -541,7 +573,7 @@ impl AppState {
                 Some(event.clone())
             },
             EventType::ButtonRelease(button) => {
-                println!("Mouse button released: {:?}", button);
+                println!("[手动] Mouse button released: {:?}", button);
                 
                 let action = Action {
                     key: ActionKey::Mouse(button),
