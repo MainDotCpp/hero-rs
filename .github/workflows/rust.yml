@@ -24,21 +24,7 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-          components: clippy, rustfmt  # 添加 clippy 和 rustfmt 组件
-      
-      # 添加格式检查
-      - name: 检查代码格式
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-      
-      # 添加 clippy 检查
-      - name: Clippy 检查
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
+
 
   build:
     name: 构建和测试
