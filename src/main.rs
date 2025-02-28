@@ -91,12 +91,12 @@ impl Combo {
             match key {
                 ActionKey::Keyboard(k) => {
                     // 随机保持时间(80-120ms)
-                    let hold_time = rng.gen_range(80..120);
+                    let hold_time = rng.gen_range(10..25);
                     win_input::send_key_press(*k, hold_time);
                 }
                 ActionKey::Mouse(b) => {
                     // 随机保持时间(80-120ms)
-                    let hold_time = rng.gen_range(80..120);
+                    let hold_time = rng.gen_range(10..25);
                     let button_id = match b {
                         Button::Left => 0,
                         Button::Right => 1,
@@ -370,7 +370,7 @@ impl AppState {
                     ActionKey::Keyboard(Key::KeyQ),
                     ActionKey::Keyboard(Key::KeyR)
                 ],
-                vec![(50, 100), (150, 100)],  // 增加延迟，确保Q和R之间有足够的时间
+                vec![(10, 10), (10, 10)],  // 增加延迟，确保Q和R之间有足够的时间
                 TriggerType::KeySequence {
                     keys: vec![Key::KeyE, Key::KeyR],
                     timeout_ms: 1500,
