@@ -81,23 +81,27 @@ impl Combo {
             match key {
                 ActionKey::Keyboard(k) => {
                     println!("[模拟] 按下按键: {:?}", k);
+                    // 增加按键保持时间，确保游戏能够捕获
                     simulate(&EventType::KeyPress(*k))?;
-                    thread::sleep(Duration::from_millis(50)); // 短暂延迟确保按键被识别
+                    thread::sleep(Duration::from_millis(100)); // 增加按键保持时间从50ms到100ms
                     println!("[模拟] 释放按键: {:?}", k);
                     simulate(&EventType::KeyRelease(*k))?;
                 }
                 ActionKey::Mouse(b) => {
                     println!("[模拟] 按下鼠标: {:?}", b);
                     simulate(&EventType::ButtonPress(*b))?;
-                    thread::sleep(Duration::from_millis(50)); // 短暂延迟确保按键被识别
+                    thread::sleep(Duration::from_millis(100)); // 同样增加到100ms
                     println!("[模拟] 释放鼠标: {:?}", b);
                     simulate(&EventType::ButtonRelease(*b))?;
                 }
             }
             
-            // 执行后延迟
+            // 执行后延迟，增加按键间隔
             if after_delay > 0 {
                 thread::sleep(Duration::from_millis(after_delay));
+            } else {
+                // 如果没有指定延迟，也添加一个小的延迟
+                thread::sleep(Duration::from_millis(50));
             }
         }
         
@@ -140,6 +144,7 @@ impl Combo {
 }
 
 // 按键历史记录
+#[derive(Clone)]
 struct KeyHistory {
     actions: VecDeque<Action>,
     pressed_keys: HashMap<ActionKey, Instant>,
@@ -277,8 +282,10 @@ struct BlockedKeyInfo {
 struct AppState {
     history: KeyHistory,
     combos: Vec<Combo>,
-    blocked_keys: HashMap<Key, BlockedKeyInfo>,  // 修改为使用BlockedKeyInfo
+    blocked_keys: HashMap<Key, BlockedKeyInfo>,
     current_champion: Option<String>,
+    // 添加一个新字段来跟踪模拟中的按键
+    simulating_keys: HashMap<Key, Instant>,
 }
 
 impl AppState {
@@ -314,6 +321,7 @@ impl AppState {
             combos,
             blocked_keys: HashMap::new(),
             current_champion: None,
+            simulating_keys: HashMap::new(),
         }
     }
 
@@ -378,13 +386,24 @@ impl AppState {
         }
     }
 
-    // 检查按键是否被屏蔽
+    // 检查按键是否被屏蔽，但确保不屏蔽模拟中的按键
     fn is_key_blocked(&mut self, key: Key) -> bool {
         // 清理过期的屏蔽
         let now = Instant::now();
         self.blocked_keys.retain(|_, info| {
             now.duration_since(info.timestamp) < Duration::from_millis(100) // 100ms屏蔽时间
         });
+        
+        // 清理过期的模拟按键标记
+        self.simulating_keys.retain(|_, timestamp| {
+            now.duration_since(*timestamp) < Duration::from_millis(1000) // 1秒的模拟时间窗口
+        });
+
+        // 检查是否是模拟中的按键 - 如果是则不屏蔽
+        if self.simulating_keys.contains_key(&key) {
+            println!("[DEBUG] 按键 {:?} 正在模拟中，不屏蔽", key);
+            return false;
+        }
         
         // 检查按键是否被屏蔽
         if let Some(info) = self.blocked_keys.get(&key) {
@@ -410,6 +429,11 @@ impl AppState {
         if self.blocked_keys.remove(&key).is_some() {
             println!("[DEBUG] 解除屏蔽按键 {:?}", key);
         }
+    }
+
+    // 添加方法来标记正在模拟的按键
+    fn mark_simulating_key(&mut self, key: Key) {
+        self.simulating_keys.insert(key, Instant::now());
     }
 
     // 处理按键事件
@@ -514,12 +538,21 @@ impl AppState {
                     if combo.block_original_input {
                         // 屏蔽触发键，并记录是哪个连招屏蔽的
                         println!("[触发] 屏蔽触发键: {:?}", key);
-                        let combo_name = combo.name.clone(); // 先复制名称，避免借用冲突
+                        let combo_name = combo.name.clone();
                         self.block_key(key, &combo_name);
                         
+                        // 标记所有会被模拟的按键，使它们不会被屏蔽
+                        for action_key in &combo.sequence {
+                            if let ActionKey::Keyboard(k) = action_key {
+                                self.mark_simulating_key(*k);
+                                println!("[DEBUG] 标记模拟按键: {:?}", k);
+                            }
+                        }
+                        
                         // 在新线程中执行连招
+                        let combo_clone = combo.clone();
                         thread::spawn(move || {
-                            if let Err(e) = combo.execute() {
+                            if let Err(e) = combo_clone.execute() {
                                 println!("执行连招失败: {:?}", e);
                             }
                         });
@@ -528,8 +561,9 @@ impl AppState {
                         return None;
                     } else {
                         // 不屏蔽原始输入的情况下执行连招
+                        let combo_clone = combo.clone();
                         thread::spawn(move || {
-                            if let Err(e) = combo.execute() {
+                            if let Err(e) = combo_clone.execute() {
                                 println!("执行连招失败: {:?}", e);
                             }
                         });
@@ -585,6 +619,17 @@ impl AppState {
                 Some(event.clone())
             },
             _ => Some(event.clone()),
+        }
+    }
+    
+    // 修正克隆的实现以避免创建新的历史记录
+    fn clone(&self) -> Self {
+        AppState {
+            history: self.history.clone(),
+            combos: self.combos.clone(),
+            blocked_keys: self.blocked_keys.clone(),
+            current_champion: self.current_champion.clone(),
+            simulating_keys: self.simulating_keys.clone(),
         }
     }
 }
