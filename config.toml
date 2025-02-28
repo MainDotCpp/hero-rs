@@ -1,0 +1,42 @@
+[general]
+history_size = 20
+history_timeout_ms = 2000
+default_delay_ms = 50
+
+# 全局连招配置
+[[global_combos]]
+name = "QWE连招"
+sequence = [
+    { key = { Keyboard = "KeyQ" }, delay_after_ms = 50 },
+    { key = { Keyboard = "KeyW" }, delay_before_ms = 20, delay_after_ms = 50 },
+    { key = { Keyboard = "KeyE" }, delay_before_ms = 20 }
+]
+trigger = { type = "SingleKey", key = "KeyA" }
+block_original_input = false
+active = true
+
+[[global_combos]]
+name = "R后普攻"
+sequence = [
+    { key = { Keyboard = "KeyR" }, delay_after_ms = 100 },
+    { key = { Mouse = "Left" }, delay_before_ms = 20 }
+]
+trigger = { type = "SingleKey", key = "KeyS" }
+block_original_input = false
+active = true
+
+# 特定英雄配置
+[champion_specific.Yasuo]
+name = "亚索"
+[[champion_specific.Yasuo.combos]]
+name = "亚索EQ连招"
+sequence = [
+    { key = { Keyboard = "KeyE" }, delay_after_ms = 30 },
+    { key = { Keyboard = "KeyQ" } }
+]
+trigger = { type = "SingleKey", key = "KeyZ" }
+block_original_input = false
+active = true
+
+# 不设置当前英雄，使用全局连招
+# current_champion = "Yasuo" 
