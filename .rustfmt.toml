@@ -1,0 +1,23 @@
+# 使用2018版Rust版本
+edition = "2021"
+
+# 每行最大字符数
+max_width = 100
+
+# tab宽度
+tab_spaces = 4
+
+# 导入模块排序方式
+imports_granularity = "Crate"
+
+# 对注释重新格式化
+normalize_comments = true
+
+# 对文档注释重新格式化
+normalize_doc_attributes = true
+
+# 使用字段初始化简写语法
+use_field_init_shorthand = true
+
+# 根据代码风格对格式进行微调
+format_code_in_doc_comments = true 

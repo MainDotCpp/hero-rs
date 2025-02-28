@@ -1,0 +1,24 @@
+# Rust编译产物
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE和编辑器文件
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# 依赖锁文件（通常保留，但在某些情况下可能需要忽略）
+# Cargo.lock
+
+# 配置文件和敏感信息
+.env
+*.config.json
+
+# 发布相关
+release/
+*.zip
+*.tar.gz
+*.exe
